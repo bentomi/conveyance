@@ -45,6 +45,20 @@
       (finally
         (.shutdown executor)))))
 
+(deftest multi-thread-bound-fn
+  (let [threads 8, tasks (* 2 threads)
+        ^Callable sut-check (bound-fn* sut-check)
+        executor (Executors/newFixedThreadPool threads)]
+    (try
+      (->> (repeatedly tasks #(.submit executor sut-check))
+           doall
+           (map #(try (.get % 1 TimeUnit/SECONDS)
+                      (catch TimeoutException _ ::timeout)))
+           (every? true?)
+           is)
+      (finally
+        (.shutdown executor)))))
+
 (deftest multi-thread-conveying-inline
   (let [threads 8, tasks (* 2 threads)
         executor (Executors/newFixedThreadPool threads)

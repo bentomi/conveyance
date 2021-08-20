@@ -1,7 +1,8 @@
 (ns com.github.bentomi.demo-test
   (:require [clojure.spec.alpha :as spec]
             [clojure.test :as test :refer [deftest is]])
-  (:import (java.util.concurrent Callable Executors TimeoutException TimeUnit)))
+  (:import (java.util.concurrent Callable Executors ExecutorService
+                                 ThreadFactory TimeoutException TimeUnit)))
 
 (def modulus 97)
 
@@ -101,5 +102,49 @@
       (->> (repeatedly tasks #(future-call sut-check))
            doall
            (map #(deref % 1000 ::timeout))
+           (every? true?)
+           is))))
+
+(defn binding-thread-factory
+  "Returns a thread factory wrapping `base-factory` that creates threads having
+  `bindings` installed."
+  [& {:keys [base-factory bindings]
+      :or {base-factory (Executors/defaultThreadFactory)
+           bindings (get-thread-bindings)}}]
+  (reify ThreadFactory
+    (newThread [_this runnable]
+      (.newThread base-factory #(with-bindings bindings (.run runnable))))))
+
+(defn ^ExecutorService binding-fixed-thread-pool
+  "Returns a fixed thread pool with `threads` number of threads using a binding
+  thread pool created according to `factory-opts`.
+  Also see: `binding-thread-factory`."
+  [threads & factory-opts]
+  (let [thread-factory (apply binding-thread-factory factory-opts)]
+    (Executors/newFixedThreadPool threads thread-factory)))
+
+(spec/fdef with-executor
+  :args (spec/cat :binding (spec/spec (spec/cat :name simple-symbol?
+                                                :executor any?))
+                  :body (spec/+ any?)))
+
+(defmacro with-executor
+  "Creates an ExecutorService by calling `executor` and executes `body`.
+  The executor service created is bound to `name` and shut down after the
+  execution of `body`."
+  [[name executor] & body]
+  `(let [~name ~executor]
+     (try
+       ~@body
+       (finally
+         (.shutdown ~name)))))
+
+(deftest multi-thread-bind-once
+  (let [threads 8, tasks (* 2 threads)]
+    (with-executor [executor (binding-fixed-thread-pool threads)]
+      (->> (repeatedly tasks #(.submit executor ^Callable sut-check))
+           doall
+           (map #(try (.get % 1 TimeUnit/SECONDS)
+                      (catch TimeoutException _ ::timeout)))
            (every? true?)
            is))))
